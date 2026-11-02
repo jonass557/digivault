@@ -9,7 +9,7 @@ import { createNotification } from '../utils/notification.utils.js';
 // Initialize payment (deposit) via iKeePay
 export const initializePayment = async (req, res) => {
   try {
-    const { items, payment_method, phone, operator, country, coupon_code, bundle_id } = req.body;
+    const { items, payment_method, phone, operator, country, coupon_code, bundle_id, otp } = req.body;
 
     const now = new Date();
 
@@ -172,7 +172,7 @@ export const initializePayment = async (req, res) => {
       });
     }
 
-    // Initialize iKeePay collection
+    // Initialize iKeePay collection (H2H)
     let collect;
     try {
       collect = await ikeepay.createCollect({
@@ -183,7 +183,8 @@ export const initializePayment = async (req, res) => {
         phone_no: phone || undefined,
         external_reference: orderNumber,
         customer_email: req.user.email,
-        description: `Commande ${orderNumber} - DigitalMarket`
+        otp: otp || undefined,
+        description: `Commande ${orderNumber} - DigiVault`
       });
     } catch (gatewayError) {
       await Order.findByIdAndUpdate(order._id, { payment_status: 'failed', status: 'cancelled' });
@@ -211,7 +212,7 @@ export const initializePayment = async (req, res) => {
   }
 };
 
-// iKeePay webhook (notification)
+// iKeePay webhook (notification H2H)
 export const ikeepayWebhook = async (req, res) => {
   try {
     const signature =
@@ -219,28 +220,39 @@ export const ikeepayWebhook = async (req, res) => {
       req.headers['x-signature'] ||
       req.headers['ikeepay-signature'];
 
-    // Vérifie la signature si un secret est configuré.
-    const sigValid = ikeepay.verifyWebhookSignature(req.body, signature);
+    // Vérifie la signature HMAC SHA-256 si un secret est configuré.
+    const sigValid = await ikeepay.verifyWebhookSignature(req.body, signature);
     if (sigValid === false) {
       return res.status(401).json({ error: 'Signature invalide' });
     }
 
+    const payloadData = req.body.data || req.body;
     const reference =
-      req.body.external_reference ||
-      req.body.reference ||
-      req.body.transaction_id ||
-      req.body.order_number;
+      payloadData.external_reference ||
+      payloadData.reference ||
+      payloadData.provider_reference ||
+      payloadData.transaction_id ||
+      payloadData.order_number ||
+      req.body.external_reference;
 
     if (!reference) {
       return res.status(400).json({ error: 'Référence manquante' });
     }
 
-    const order = await Order.findOne({ order_number: reference });
+    // Gestion cas notification retrait (payout)
+    if (payloadData.type === 'payout' || req.body.event === 'payout.updated') {
+      return res.json({ status: 'OK', type: 'payout_received' });
+    }
+
+    const order = await Order.findOne({
+      $or: [{ order_number: reference }, { payment_reference: reference }]
+    });
+
     if (!order) {
       return res.status(404).json({ error: 'Commande non trouvée' });
     }
 
-    // Re-vérification systématique du statut côté iKeePay (source de vérité).
+    // Re-vérification systématique du statut auprès de l'API iKeePay (H2H verify)
     const verification = await ikeepay.verifyTransaction(order.payment_reference || reference);
 
     if (verification.status === 'SUCCESS' && order.payment_status !== 'completed') {
@@ -249,7 +261,7 @@ export const ikeepayWebhook = async (req, res) => {
       await Order.findByIdAndUpdate(order._id, { payment_status: 'failed', status: 'cancelled' });
     }
 
-    res.json({ status: 'OK' });
+    res.json({ status: 'OK', received: true });
   } catch (error) {
     console.error('iKeePay webhook error:', error);
     res.status(500).json({ error: 'Webhook processing failed' });

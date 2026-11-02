@@ -288,7 +288,7 @@ export const processWithdrawal = async (req, res) => {
     // Le vendeur reçoit le NET (montant − frais de retrait plateforme).
     let payoutRef = transaction_reference || null;
 
-    if (ikeepay.isConfigured()) {
+    if (await ikeepay.isConfigured()) {
       try {
         const payout = await ikeepay.createPayout({
           amount: withdrawal.net_amount || withdrawal.amount,

@@ -1,249 +1,296 @@
 import axios from 'axios';
 import crypto from 'crypto';
+import mongoose from 'mongoose';
+import { getSetting } from '../utils/setting.utils.js';
 
 /**
- * iKeePay payment gateway adapter.
- *
- * Toute la configuration est pilotée par variables d'environnement afin de
- * pouvoir brancher les identifiants réels (clé API, chemins exacts des
- * endpoints) sans modifier le code. Les valeurs par défaut correspondent à ce
- * qui a été observé sur le portail iKeePay ; elles restent surchargables depuis
- * le dashboard marchand via les variables `IKEEPAY_*_PATH`.
- *
- * Base URL:  https://api.ikeepay.com
- * Docs:      https://www.ikeepay.com/developer
+ * Passerelle de Paiement iKeePay - Intégration H2H (Payin, Payout, Webhooks & Verification)
+ * 
+ * Documentation H2H :
+ * - Endpoint Live : https://api.ikeepay.com
+ * - Header d'authentification : x-api-key: SECRET_KEY
+ * - Encaissement (Payin) : POST /h2h-payin
+ * - Retrait (Payout) : POST /h2h-payout
+ * - Vérification : GET /h2h-verify/:reference
+ * - Webhooks : POST avec signature HMAC SHA-256 dans l'en-tête 'x-ikeepay-signature'
+ * 
+ * Les clés sont chargées dynamiquement depuis la base de données (Table Setting),
+ * permettant à l'administrateur de les modifier depuis son tableau de bord,
+ * avec fallback sur les variables d'environnement (.env).
  */
-
-const BASE_URL = process.env.IKEEPAY_BASE_URL || 'https://api.ikeepay.com';
-const API_KEY = process.env.IKEEPAY_API_KEY || '';
-const SECRET_KEY = process.env.IKEEPAY_SECRET_KEY || '';
-const SITE_NAME = process.env.IKEEPAY_SITE_NAME || 'DigitalMarket';
-
-const COLLECT_PATH = process.env.IKEEPAY_COLLECT_PATH || '/api/v1/payment/collect';
-const STATUS_PATH = process.env.IKEEPAY_STATUS_PATH || '/api/v1/payment/status';
-const PAYOUT_PATH = process.env.IKEEPAY_PAYOUT_PATH || '/api/v1/payout';
 
 // Devise par pays (ISO alpha-2). Défaut XOF (UEMOA).
 const XAF_COUNTRIES = ['CM', 'CG', 'CD', 'GA', 'TD', 'GQ'];
 
-export const currencyForCountry = (country) => {
+export const currencyForCountry = (country, defaultCurrency = 'XOF') => {
   const c = String(country || '').toUpperCase();
   if (XAF_COUNTRIES.includes(c)) return 'XAF';
   if (c === 'GH') return 'GHS';
-  return 'XOF';
+  return defaultCurrency || 'XOF';
 };
 
-// True quand la passerelle est configurée avec une clé API.
-export const isConfigured = () => Boolean(API_KEY);
+/**
+ * Récupère la configuration iKeePay actuelle (Base de données avec repli sur .env).
+ */
+export const getIkeepayConfig = async () => {
+  let dbSecretKey, dbApiKey, dbSiteName, dbEnv, dbCurrency;
+  if (mongoose.connection && mongoose.connection.readyState === 1) {
+    try {
+      [dbSecretKey, dbApiKey, dbSiteName, dbEnv, dbCurrency] = await Promise.all([
+        getSetting('ikeepay_secret_key'),
+        getSetting('ikeepay_api_key'),
+        getSetting('ikeepay_site_name'),
+        getSetting('ikeepay_env'),
+        getSetting('ikeepay_currency'),
+      ]);
+    } catch (err) {
+      // Fallback silently to process.env if DB error
+    }
+  }
 
-// Client axios partagé, authentifié par Bearer token.
-const client = axios.create({
-  baseURL: BASE_URL,
-  timeout: 30000,
-  headers: {
-    'Content-Type': 'application/json',
-    Authorization: API_KEY ? `Bearer ${API_KEY}` : undefined,
-  },
-});
+  const secretKey = (dbSecretKey || process.env.IKEEPAY_SECRET_KEY || '').trim();
+  const apiKey = (dbApiKey || process.env.IKEEPAY_API_KEY || '').trim();
+  const baseUrl = (process.env.IKEEPAY_BASE_URL || 'https://api.ikeepay.com').replace(/\/+$/, '');
+  const siteName = (dbSiteName || process.env.IKEEPAY_SITE_NAME || 'DigiVault').trim();
+  const env = dbEnv || process.env.IKEEPAY_ENV || 'live';
+  const defaultCurrency = dbCurrency || 'XOF';
+
+  return {
+    secretKey,
+    apiKey,
+    baseUrl,
+    siteName,
+    env,
+    defaultCurrency,
+    isConfigured: Boolean(secretKey || apiKey),
+  };
+};
+
+/**
+ * Vérifie si la passerelle est configurée.
+ */
+export const isConfigured = async () => {
+  const conf = await getIkeepayConfig();
+  return conf.isConfigured;
+};
 
 /**
  * Normalise un statut renvoyé par iKeePay vers SUCCESS | PENDING | FAILED.
  */
 export const normalizeStatus = (raw) => {
   const s = String(raw || '').toUpperCase();
-  if (['SUCCESS', 'SUCCESSFUL', 'ACCEPTED', 'COMPLETED', 'PAID', 'SUCCÈS'].includes(s)) {
+  if (['COMPLETED', 'SUCCESS', 'SUCCESSFUL', 'ACCEPTED', 'PAID', 'SUCCÈS'].includes(s)) {
     return 'SUCCESS';
   }
-  if (['FAILED', 'REFUSED', 'CANCELLED', 'CANCELED', 'DECLINED', 'ERROR'].includes(s)) {
+  if (['FAILED', 'REFUSED', 'CANCELLED', 'CANCELED', 'DECLINED', 'ERROR', 'ÉCHEC'].includes(s)) {
     return 'FAILED';
   }
   return 'PENDING';
 };
 
 /**
- * Extrait le noyau de données d'une réponse iKeePay, quelle que soit sa forme
- * ({ data: { data: {...} } }, { data: {...} } ou {...}).
+ * Formatage d'un numéro de téléphone propre pour les passerelles mobiles (sans '+', uniquement chiffres).
  */
-const unwrap = (payload) => {
-  if (!payload || typeof payload !== 'object') return {};
-  if (payload.data && typeof payload.data === 'object') {
-    if (payload.data.data && typeof payload.data.data === 'object') return payload.data.data;
-    return payload.data;
-  }
-  return payload;
+const cleanPhoneNumber = (phone) => {
+  if (!phone) return '';
+  return String(phone).replace(/[^0-9]/g, '');
 };
 
-const pickLink = (data) =>
-  data?.payment_link || data?.redirect_url || data?.link || data?.payment_url || null;
-
-const pickReference = (data) =>
-  data?.reference || data?.transaction_id || data?.trans_id || data?.id || null;
-
 /**
- * Initialise une collecte de paiement (dépôt client) — Mobile Money ou carte.
- *
- * @returns {{ reference: string|null, payment_link: string|null, status: string, raw: object }}
- * @throws si la passerelle renvoie une erreur (message exploitable côté front).
+ * 1. Encaissement (Payin) H2H
+ * Endpoint : POST /h2h-payin
+ * Headers : x-api-key: SECRET_KEY
  */
 export const createCollect = async ({
   amount,
   currency,
   operator,
-  country,
+  country = 'CI',
   phone_no,
   external_reference,
   customer_email,
+  otp,
   description,
 }) => {
-  if (!isConfigured()) {
-    throw new Error('Passerelle de paiement non configurée (IKEEPAY_API_KEY manquant).');
+  const config = await getIkeepayConfig();
+  if (!config.isConfigured) {
+    throw new Error('Passerelle iKeePay non configurée. Veuillez renseigner la clé secrète dans le tableau de bord administrateur.');
   }
 
   const resolvedCountry = String(country || 'CI').toUpperCase();
-  const body = {
+  const resolvedCurrency = currency || currencyForCountry(resolvedCountry, config.defaultCurrency);
+  const resolvedPhone = cleanPhoneNumber(phone_no);
+  const resolvedOperator = operator ? String(operator).toUpperCase() : 'ORANGE';
+
+  const payload = {
     amount: Math.round(Number(amount)),
-    currency: currency || currencyForCountry(resolvedCountry),
-    operator: operator ? String(operator).toUpperCase() : undefined,
+    currency: resolvedCurrency,
     country: resolvedCountry,
-    phone_no: phone_no || undefined,
+    phoneNumber: resolvedPhone,
+    operator: resolvedOperator,
     external_reference,
     customer_email: customer_email || undefined,
-    description: description || `Paiement ${SITE_NAME}`,
-    site_name: SITE_NAME,
-    notify_url: process.env.IKEEPAY_NOTIFY_URL || undefined,
-    return_url: process.env.IKEEPAY_RETURN_URL
-      ? `${process.env.IKEEPAY_RETURN_URL}?order=${external_reference}`
-      : undefined,
-    cancel_url: process.env.IKEEPAY_CANCEL_URL || undefined,
+    ...(otp ? { otp: String(otp) } : {}),
+  };
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': config.secretKey || config.apiKey,
   };
 
   try {
-    const { data } = await client.post(COLLECT_PATH, body);
+    const url = `${config.baseUrl}/h2h-payin`;
+    const response = await axios.post(url, payload, { headers, timeout: 35000 });
+    const data = response.data;
 
-    // iKeePay renvoie `status:false` en cas d'échec métier.
     if (data && data.status === false) {
-      throw new Error(data.message || 'Erreur de la passerelle iKeePay');
+      throw new Error(data.message || 'Erreur lors de l\'encaissement iKeePay H2H');
     }
 
-    const core = unwrap(data);
+    const core = data?.data || data;
+    const paymentLink = core?.payment_link || data?.payment_link || null;
+    const reference = core?.provider_reference || core?.external_reference || external_reference;
+    const status = normalizeStatus(core?.status || data?.status);
+
     return {
-      reference: pickReference(core) || external_reference,
-      payment_link: pickLink(core),
-      status: normalizeStatus(core.status || core.state),
-      raw: data,
-    };
-  } catch (error) {
-    if (error.response) {
-      const msg = error.response.data?.message || error.response.data?.error;
-      throw new Error(msg || `iKeePay collect a échoué (HTTP ${error.response.status})`);
-    }
-    throw error;
-  }
-};
-
-/**
- * Vérifie l'état d'une transaction auprès d'iKeePay.
- *
- * @returns {{ status: 'SUCCESS'|'PENDING'|'FAILED', reference: string|null, raw: object }}
- */
-export const verifyTransaction = async (reference) => {
-  if (!isConfigured()) {
-    throw new Error('Passerelle de paiement non configurée (IKEEPAY_API_KEY manquant).');
-  }
-
-  try {
-    const { data } = await client.post(STATUS_PATH, {
       reference,
-      external_reference: reference,
-    });
-
-    const core = unwrap(data);
-    return {
-      status: normalizeStatus(core.status || core.state),
-      reference: pickReference(core) || reference,
-      raw: data,
-    };
-  } catch (error) {
-    if (error.response) {
-      const msg = error.response.data?.message || error.response.data?.error;
-      throw new Error(msg || `iKeePay status a échoué (HTTP ${error.response.status})`);
-    }
-    throw error;
-  }
-};
-
-/**
- * Déclenche un versement (payout / retrait) vers un bénéficiaire.
- *
- * @returns {{ reference: string|null, status: 'SUCCESS'|'PENDING'|'FAILED', raw: object }}
- * @throws si le payout est refusé (aucune commission ne doit alors être consommée).
- */
-export const createPayout = async ({
-  amount,
-  currency,
-  operator,
-  country,
-  phone_no,
-  recipient,
-  external_reference,
-  description,
-}) => {
-  if (!isConfigured()) {
-    throw new Error('Passerelle de paiement non configurée (IKEEPAY_API_KEY manquant).');
-  }
-
-  const resolvedCountry = String(country || 'CI').toUpperCase();
-  const body = {
-    amount: Math.round(Number(amount)),
-    currency: currency || currencyForCountry(resolvedCountry),
-    operator: operator ? String(operator).toUpperCase() : undefined,
-    country: resolvedCountry,
-    phone_no: phone_no || undefined,
-    recipient: recipient || undefined,
-    external_reference,
-    description: description || `Retrait ${SITE_NAME}`,
-    site_name: SITE_NAME,
-  };
-
-  try {
-    const { data } = await client.post(PAYOUT_PATH, body);
-
-    if (data && data.status === false) {
-      throw new Error(data.message || 'Le versement iKeePay a été refusé');
-    }
-
-    const core = unwrap(data);
-    const status = normalizeStatus(core.status || core.state);
-
-    if (status === 'FAILED') {
-      throw new Error(core.message || 'Le versement iKeePay a échoué');
-    }
-
-    return {
-      reference: pickReference(core) || external_reference,
+      provider_reference: core?.provider_reference || null,
+      payment_link: paymentLink,
       status,
       raw: data,
     };
   } catch (error) {
     if (error.response) {
-      const msg = error.response.data?.message || error.response.data?.error;
-      throw new Error(msg || `iKeePay payout a échoué (HTTP ${error.response.status})`);
+      const errorMsg = error.response.data?.message || error.response.data?.error || `Erreur iKeePay HTTP ${error.response.status}`;
+      throw new Error(errorMsg);
     }
     throw error;
   }
 };
 
 /**
- * Vérifie la signature HMAC-SHA256 d'un webhook iKeePay.
- * Si aucun secret n'est configuré, renvoie null (l'appelant doit alors
- * re-vérifier le statut directement via `verifyTransaction`).
+ * 2. Retrait (Payout) H2H
+ * Endpoint : POST /h2h-payout
+ * Headers : x-api-key: SECRET_KEY
  */
-export const verifyWebhookSignature = (rawBody, signatureHeader) => {
-  if (!SECRET_KEY) return null;
+export const createPayout = async ({
+  amount,
+  currency,
+  operator,
+  country = 'CI',
+  phone_no,
+  external_reference,
+}) => {
+  const config = await getIkeepayConfig();
+  if (!config.isConfigured) {
+    throw new Error('Passerelle iKeePay non configurée. Veuillez renseigner la clé secrète dans le tableau de bord administrateur.');
+  }
+
+  const resolvedCountry = String(country || 'CI').toUpperCase();
+  const resolvedCurrency = currency || currencyForCountry(resolvedCountry, config.defaultCurrency);
+  const resolvedPhone = cleanPhoneNumber(phone_no);
+  const resolvedOperator = operator ? String(operator).toUpperCase() : 'ORANGE';
+
+  const payload = {
+    amount: Math.round(Number(amount)),
+    currency: resolvedCurrency,
+    country: resolvedCountry,
+    phoneNumber: resolvedPhone,
+    operator: resolvedOperator,
+    external_reference,
+  };
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': config.secretKey || config.apiKey,
+  };
+
+  try {
+    const url = `${config.baseUrl}/h2h-payout`;
+    const response = await axios.post(url, payload, { headers, timeout: 35000 });
+    const data = response.data;
+
+    if (data && (data.status === false || data.status === 'failed')) {
+      throw new Error(data.message || 'Le retrait iKeePay a été refusé par l\'opérateur.');
+    }
+
+    const core = data?.data || data;
+    const status = normalizeStatus(core?.status || data?.status);
+
+    if (status === 'FAILED') {
+      throw new Error(core?.message || 'Échec du retrait vendeur sur le compte mobile.');
+    }
+
+    return {
+      reference: core?.provider_reference || core?.external_reference || external_reference,
+      provider_reference: core?.provider_reference || null,
+      status,
+      raw: data,
+    };
+  } catch (error) {
+    if (error.response) {
+      const errorMsg = error.response.data?.message || error.response.data?.error || `Erreur retrait iKeePay HTTP ${error.response.status}`;
+      throw new Error(errorMsg);
+    }
+    throw error;
+  }
+};
+
+/**
+ * 3. Vérification de transaction H2H
+ * Endpoint : GET /h2h-verify/:reference
+ * Headers : x-api-key: SECRET_KEY
+ */
+export const verifyTransaction = async (reference) => {
+  const config = await getIkeepayConfig();
+  if (!config.isConfigured) {
+    throw new Error('Passerelle iKeePay non configurée.');
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': config.secretKey || config.apiKey,
+  };
+
+  try {
+    const url = `${config.baseUrl}/h2h-verify/${encodeURIComponent(reference)}`;
+    const response = await axios.get(url, { headers, timeout: 25000 });
+    const data = response.data;
+
+    const core = data?.data || data;
+    const status = normalizeStatus(core?.status);
+
+    return {
+      status,
+      external_reference: core?.external_reference || reference,
+      provider_reference: core?.provider_reference || null,
+      amount: core?.amount,
+      currency: core?.currency,
+      operator: core?.operator,
+      raw: data,
+    };
+  } catch (error) {
+    if (error.response) {
+      const errorMsg = error.response.data?.message || error.response.data?.error || `Vérification iKeePay HTTP ${error.response.status}`;
+      throw new Error(errorMsg);
+    }
+    throw error;
+  }
+};
+
+/**
+ * 4. Webhook : Sécurité & Vérification (HMAC SHA-256)
+ * En-tête : X-Ikeepay-Signature
+ */
+export const verifyWebhookSignature = async (rawBody, signatureHeader) => {
+  const config = await getIkeepayConfig();
+  const secretKey = config.secretKey || config.apiKey;
+
+  if (!secretKey) return null; // Clé non configurée
   if (!signatureHeader) return false;
 
   const payload = typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody);
-  const expected = crypto.createHmac('sha256', SECRET_KEY).update(payload).digest('hex');
+  const expected = crypto.createHmac('sha256', secretKey).update(payload).digest('hex');
 
   try {
     const a = Buffer.from(expected);
@@ -255,11 +302,12 @@ export const verifyWebhookSignature = (rawBody, signatureHeader) => {
 };
 
 export default {
+  getIkeepayConfig,
   isConfigured,
   currencyForCountry,
   normalizeStatus,
   createCollect,
-  verifyTransaction,
   createPayout,
+  verifyTransaction,
   verifyWebhookSignature,
 };

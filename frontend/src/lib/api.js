@@ -21,9 +21,17 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor to handle token refresh
+// Response interceptor to handle token refresh and protect against HTML SPA rewrites
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // Si la réponse est du HTML (ex: rewrite Vercel SPA quand le backend est non configuré ou hors-ligne)
+    if (typeof response.data === 'string' && response.data.trim().startsWith('<!DOCTYPE')) {
+      const err = new Error('Backend API non disponible (page HTML reçue au lieu de JSON).');
+      err.isHtmlFallback = true;
+      return Promise.reject(err);
+    }
+    return response;
+  },
   async (error) => {
     const originalRequest = error.config;
 
@@ -49,7 +57,10 @@ api.interceptors.response.use(
       } catch (refreshError) {
         localStorage.removeItem('accessToken');
         localStorage.removeItem('refreshToken');
-        window.location.href = '/login';
+        const path = window.location.pathname;
+        if (path.startsWith('/admin') || path.startsWith('/vendor') || path.startsWith('/account') || path.startsWith('/checkout')) {
+          window.location.href = '/login';
+        }
         return Promise.reject(refreshError);
       }
     }
@@ -227,12 +238,10 @@ export const adminAPI = {
 // Coupons API
 export const couponsAPI = {
   validate: (code, items) => api.post('/coupons/validate', { code, items }),
-  // Vendor
   getMine: () => api.get('/coupons/my-coupons'),
   create: (data) => api.post('/coupons', data),
   update: (id, data) => api.put(`/coupons/${id}`, data),
   delete: (id) => api.delete(`/coupons/${id}`),
-  // Admin
   getAllAdmin: (params) => api.get('/coupons/admin', { params }),
   createAdmin: (data) => api.post('/coupons/admin', data),
 };
@@ -242,7 +251,6 @@ export const bundlesAPI = {
   getPublished: (params) => api.get('/bundles', { params }),
   getBySlug: (slug) => api.get(`/bundles/${slug}`),
   getForProduct: (productId) => api.get(`/bundles/for-product/${productId}`),
-  // Vendor
   getMine: () => api.get('/bundles/mine'),
   create: (data) => api.post('/bundles', data),
   update: (id, data) => api.put(`/bundles/${id}`, data),
