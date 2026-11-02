@@ -32,6 +32,18 @@ const orderItemSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  // Réduction appliquée à cet item et sa source, pour la traçabilité comptable.
+  //  - 'vendor' : coupon vendeur / bundle → déduit de vendor_amount.
+  //  - 'platform' : coupon admin → vendor_amount reste plein, plateforme absorbe.
+  discount_amount: {
+    type: Number,
+    default: 0
+  },
+  discount_source: {
+    type: String,
+    enum: ['vendor', 'platform', 'bundle', null],
+    default: null
+  },
   download_count: {
     type: Number,
     default: 0

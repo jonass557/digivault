@@ -1,6 +1,6 @@
 import { validationResult } from 'express-validator';
 import slugify from 'slugify';
-import { Product, Category, Vendor, ProductFile, ProductPreview, Review, User, OrderItem } from '../models/index.js';
+import { Product, Category, Vendor, ProductFile, ProductPreview, Review, User, OrderItem, ProductAffinity } from '../models/index.js';
 
 // Get all products with filters
 export const getProducts = async (req, res) => {
@@ -674,6 +674,88 @@ export const getPendingProducts = async (req, res) => {
     });
   } catch (error) {
     console.error('Get pending products error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+// Get related products (same category) — GET /api/products/:slug/related
+export const getRelatedProducts = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const limit = parseInt(req.query.limit) || 8;
+
+    const product = await Product.findOne({ slug }).select('_id category_id').lean();
+    if (!product) {
+      return res.status(404).json({ error: 'Produit non trouvé' });
+    }
+
+    const products = await Product.find({
+      status: 'published',
+      category_id: product.category_id,
+      _id: { $ne: product._id }
+    })
+      .populate('vendor_id', 'store_name store_slug')
+      .sort({ sales_count: -1, rating: -1 })
+      .limit(limit)
+      .lean();
+
+    res.json(products.map((p) => ({
+      ...p,
+      id: p._id,
+      store_name: p.vendor_id?.store_name,
+      store_slug: p.vendor_id?.store_slug
+    })));
+  } catch (error) {
+    console.error('Get related products error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+};
+
+// Get "frequently bought together" — GET /api/products/:slug/frequently-bought
+export const getFrequentlyBought = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const limit = parseInt(req.query.limit) || 4;
+
+    const product = await Product.findOne({ slug }).select('_id').lean();
+    if (!product) {
+      return res.status(404).json({ error: 'Produit non trouvé' });
+    }
+
+    // Paires contenant ce produit, triées par co-achats décroissants.
+    const pairs = await ProductAffinity.find({
+      $or: [{ product_a: product._id }, { product_b: product._id }]
+    })
+      .sort({ count: -1 })
+      .limit(limit * 3)
+      .lean();
+
+    // Identifie "l'autre" produit de chaque paire.
+    const others = pairs.map((p) =>
+      p.product_a.toString() === product._id.toString() ? p.product_b : p.product_a
+    );
+    const countByOther = new Map();
+    pairs.forEach((p, i) => countByOther.set(others[i].toString(), p.count));
+
+    const products = await Product.find({ _id: { $in: others }, status: 'published' })
+      .populate('vendor_id', 'store_name store_slug')
+      .lean();
+
+    // Conserve l'ordre par co-achats et applique la limite finale.
+    const result = products
+      .map((p) => ({
+        ...p,
+        id: p._id,
+        store_name: p.vendor_id?.store_name,
+        store_slug: p.vendor_id?.store_slug,
+        bought_together_count: countByOther.get(p._id.toString()) || 0
+      }))
+      .sort((a, b) => b.bought_together_count - a.bought_together_count)
+      .slice(0, limit);
+
+    res.json(result);
+  } catch (error) {
+    console.error('Get frequently bought error:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 };

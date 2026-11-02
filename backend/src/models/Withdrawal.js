@@ -10,6 +10,18 @@ const withdrawalSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  fee_rate: {
+    type: Number,
+    default: 0
+  },
+  fee_amount: {
+    type: Number,
+    default: 0
+  },
+  net_amount: {
+    type: Number,
+    default: 0
+  },
   payment_method: {
     type: String,
     enum: ['mobile_money', 'bank_transfer'],
@@ -33,7 +45,7 @@ const withdrawalSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'processing', 'completed', 'rejected'],
+    enum: ['pending', 'processing', 'completed', 'rejected', 'failed'],
     default: 'pending'
   },
   rejection_reason: {

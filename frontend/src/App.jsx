@@ -45,6 +45,8 @@ import VendorProductForm from './pages/vendor/VendorProductForm';
 import VendorOrders from './pages/vendor/VendorOrders';
 import VendorWithdrawals from './pages/vendor/VendorWithdrawals';
 import VendorSettings from './pages/vendor/VendorSettings';
+import VendorCoupons from './pages/vendor/VendorCoupons';
+import VendorBundles from './pages/vendor/VendorBundles';
 
 // Admin Dashboard Pages
 import AdminDashboard from './pages/admin/AdminDashboard';
@@ -58,6 +60,7 @@ import AdminCategories from './pages/admin/AdminCategories';
 import AdminBanners from './pages/admin/AdminBanners';
 import AdminBlog from './pages/admin/AdminBlog';
 import AdminSettings from './pages/admin/AdminSettings';
+import AdminCoupons from './pages/admin/AdminCoupons';
 
 // Route Guards
 import ProtectedRoute from './components/ProtectedRoute';
@@ -120,6 +123,8 @@ function App() {
         <Route path="products/new" element={<VendorProductForm />} />
         <Route path="products/:id/edit" element={<VendorProductForm />} />
         <Route path="orders" element={<VendorOrders />} />
+        <Route path="coupons" element={<VendorCoupons />} />
+        <Route path="bundles" element={<VendorBundles />} />
         <Route path="withdrawals" element={<VendorWithdrawals />} />
         <Route path="settings" element={<VendorSettings />} />
       </Route>
@@ -134,6 +139,7 @@ function App() {
         <Route path="users" element={<AdminUsers />} />
         <Route path="withdrawals" element={<AdminWithdrawals />} />
         <Route path="categories" element={<AdminCategories />} />
+        <Route path="coupons" element={<AdminCoupons />} />
         <Route path="banners" element={<AdminBanners />} />
         <Route path="blog" element={<AdminBlog />} />
         <Route path="settings" element={<AdminSettings />} />

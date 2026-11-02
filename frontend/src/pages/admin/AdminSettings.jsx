@@ -64,8 +64,18 @@ export default function AdminSettings() {
             <CardHeader><CardTitle>Commissions et paiements</CardTitle></CardHeader>
             <CardContent className="space-y-4">
               <div>
-                <Label>Taux de commission (%)</Label>
-                <Input type="number" value={settings.commission_rate || 10} onChange={(e) => updateSetting('commission_rate', parseFloat(e.target.value))} />
+                <Label>Frais de retrait (%)</Label>
+                <Input type="number" value={settings.withdrawal_fee_rate ?? 10} onChange={(e) => updateSetting('withdrawal_fee_rate', parseFloat(e.target.value))} />
+                <p className="text-sm text-muted-foreground mt-1">
+                  Pourcentage retenu par la plateforme sur chaque retrait vendeur.
+                </p>
+              </div>
+              <div>
+                <Label>Taux de commission à la vente (%)</Label>
+                <Input type="number" value={settings.commission_rate ?? 10} onChange={(e) => updateSetting('commission_rate', parseFloat(e.target.value))} />
+                <p className="text-sm text-muted-foreground mt-1">
+                  Conservé pour référence. La commission est actuellement prélevée au retrait.
+                </p>
               </div>
               <div>
                 <Label>Retrait minimum (FCFA)</Label>

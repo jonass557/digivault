@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { 
-  ShoppingBag, Search, ShoppingCart, User, Menu, X, 
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  ShoppingBag, Search, ShoppingCart, User, Menu, X,
   Moon, Sun, Heart, LogOut, Settings, Package, LayoutDashboard,
-  ChevronDown
+  ChevronDown, Bell
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -19,16 +20,59 @@ import { Badge } from './ui/badge';
 import { useAuthStore } from '../stores/authStore';
 import { useCartStore } from '../stores/cartStore';
 import { useThemeStore } from '../stores/themeStore';
-import { getInitials } from '../lib/utils';
+import { getInitials, formatRelativeTime } from '../lib/utils';
+import { notificationsAPI } from '../lib/api';
 
 export default function Header() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const navigate = useNavigate();
-  
+  const queryClient = useQueryClient();
+
   const { user, isAuthenticated, logout } = useAuthStore();
   const cartCount = useCartStore((state) => state.getCount());
   const { theme, toggleTheme } = useThemeStore();
+
+  // Compteur de notifications non lues (rafraîchi périodiquement).
+  const { data: unreadData } = useQuery({
+    queryKey: ['notifications-unread'],
+    queryFn: () => notificationsAPI.getUnreadCount().then((r) => r.data),
+    enabled: isAuthenticated,
+    refetchInterval: 60000,
+  });
+  const unreadCount = unreadData?.count || 0;
+
+  const { data: notifData } = useQuery({
+    queryKey: ['notifications-list'],
+    queryFn: () => notificationsAPI.getAll({ limit: 8 }).then((r) => r.data),
+    enabled: isAuthenticated,
+  });
+  const notifications = notifData?.notifications || [];
+
+  const handleOpenNotifications = async (open) => {
+    if (open) {
+      queryClient.invalidateQueries({ queryKey: ['notifications-list'] });
+    }
+  };
+
+  const handleNotificationClick = async (notif) => {
+    if (!notif.is_read) {
+      try {
+        await notificationsAPI.markAsRead(notif.id);
+        queryClient.invalidateQueries({ queryKey: ['notifications-unread'] });
+        queryClient.invalidateQueries({ queryKey: ['notifications-list'] });
+      } catch { /* silencieux */ }
+    }
+    if (notif.link) navigate(notif.link);
+  };
+
+  const handleMarkAll = async () => {
+    try {
+      await notificationsAPI.markAllAsRead();
+      queryClient.invalidateQueries({ queryKey: ['notifications-unread'] });
+      queryClient.invalidateQueries({ queryKey: ['notifications-list'] });
+    } catch { /* silencieux */ }
+  };
 
   const handleSearch = (e) => {
     e.preventDefault();
@@ -103,6 +147,48 @@ export default function Header() {
                 )}
               </Button>
             </Link>
+
+            {/* Notifications */}
+            {isAuthenticated && (
+              <DropdownMenu onOpenChange={handleOpenNotifications}>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="relative">
+                    <Bell className="w-5 h-5" />
+                    {unreadCount > 0 && (
+                      <Badge className="absolute -top-1 -right-1 h-5 min-w-5 px-1 flex items-center justify-center text-xs" variant="destructive">
+                        {unreadCount > 9 ? '9+' : unreadCount}
+                      </Badge>
+                    )}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-80">
+                  <div className="flex items-center justify-between px-2 py-1.5">
+                    <p className="font-medium">Notifications</p>
+                    {unreadCount > 0 && (
+                      <button onClick={handleMarkAll} className="text-xs text-primary hover:underline">
+                        Tout marquer lu
+                      </button>
+                    )}
+                  </div>
+                  <DropdownMenuSeparator />
+                  {notifications.length === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-6">Aucune notification</p>
+                  ) : (
+                    notifications.map((n) => (
+                      <DropdownMenuItem
+                        key={n.id}
+                        onClick={() => handleNotificationClick(n)}
+                        className={`flex flex-col items-start gap-0.5 cursor-pointer ${!n.is_read ? 'bg-primary/5' : ''}`}
+                      >
+                        <span className="font-medium text-sm">{n.title}</span>
+                        <span className="text-xs text-muted-foreground line-clamp-2">{n.message}</span>
+                        <span className="text-xs text-muted-foreground/70">{formatRelativeTime(n.created_at)}</span>
+                      </DropdownMenuItem>
+                    ))
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
 
             {/* User menu */}
             {isAuthenticated ? (

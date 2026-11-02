@@ -1,0 +1,70 @@
+# Render Blueprint — backend API (Express + MongoDB)
+# Doc: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: digitalmarket-api
+    env: node
+    region: frankfurt
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_EXPIRE
+        value: 15m
+      - key: JWT_REFRESH_EXPIRE
+        value: 7d
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: DOWNLOAD_LINK_EXPIRE_MINUTES
+        value: "60"
+      - key: MAX_DOWNLOAD_ATTEMPTS
+        value: "5"
+      # iKeePay
+      - key: IKEEPAY_BASE_URL
+        value: https://api.ikeepay.com
+      - key: IKEEPAY_API_KEY
+        sync: false
+      - key: IKEEPAY_SECRET_KEY
+        sync: false
+      - key: IKEEPAY_SITE_NAME
+        value: DigitalMarket
+      - key: IKEEPAY_ENV
+        value: live
+      - key: IKEEPAY_COLLECT_PATH
+        value: /api/v1/payment/collect
+      - key: IKEEPAY_STATUS_PATH
+        value: /api/v1/payment/status
+      - key: IKEEPAY_PAYOUT_PATH
+        value: /api/v1/payout
+      - key: IKEEPAY_NOTIFY_URL
+        sync: false
+      - key: IKEEPAY_RETURN_URL
+        sync: false
+      - key: IKEEPAY_CANCEL_URL
+        sync: false

@@ -35,6 +35,14 @@ const productSchema = new mongoose.Schema({
   sale_price: {
     type: Number
   },
+  // Fenêtre de vente flash (optionnelle). Si renseignée, `sale_price` ne
+  // s'applique que dans l'intervalle ; voir backend/src/utils/pricing.utils.js.
+  sale_starts_at: {
+    type: Date
+  },
+  sale_ends_at: {
+    type: Date
+  },
   product_type: {
     type: String,
     enum: ['document', 'audio', 'video', 'image', 'software', 'asset', 'other'],

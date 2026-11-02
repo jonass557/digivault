@@ -1,17 +1,49 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
-import { ShoppingCart, Trash2, ArrowRight, ShoppingBag } from 'lucide-react';
+import { ShoppingCart, Trash2, ArrowRight, ShoppingBag, Tag, X, Loader2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '../components/ui/card';
+import { Input } from '../components/ui/input';
 import { Separator } from '../components/ui/separator';
 import { useCartStore } from '../stores/cartStore';
 import { useAuthStore } from '../stores/authStore';
+import { couponsAPI } from '../lib/api';
 import { formatPrice } from '../lib/utils';
+import toast from 'react-hot-toast';
 
 export default function CartPage() {
-  const { items, removeItem, clearCart, getTotal } = useCartStore();
+  const { items, removeItem, clearCart, getTotal, coupon, applyCoupon, removeCoupon, getDiscount, getNetTotal } = useCartStore();
   const { isAuthenticated } = useAuthStore();
+  const [couponCode, setCouponCode] = useState('');
+  const [validating, setValidating] = useState(false);
   const total = getTotal();
+  const discount = getDiscount();
+  const netTotal = getNetTotal();
+
+  const handleApplyCoupon = async (e) => {
+    e.preventDefault();
+    if (!couponCode.trim()) return;
+    if (!isAuthenticated) {
+      toast.error('Connectez-vous pour utiliser un coupon');
+      return;
+    }
+    setValidating(true);
+    try {
+      const res = await couponsAPI.validate(couponCode.trim(), items.map((i) => i.id));
+      if (res.data.valid) {
+        applyCoupon(res.data);
+        toast.success(`Coupon appliqué : -${formatPrice(res.data.discount_amount)}`);
+        setCouponCode('');
+      } else {
+        toast.error(res.data.error || 'Coupon invalide');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.error || 'Coupon invalide');
+    } finally {
+      setValidating(false);
+    }
+  };
 
   if (!items || items.length === 0) {
     return (
@@ -100,10 +132,46 @@ export default function CartPage() {
                   <span className="text-muted-foreground">Sous-total</span>
                   <span>{formatPrice(total)}</span>
                 </div>
+
+                {/* Coupon */}
+                {coupon ? (
+                  <div className="flex items-center justify-between rounded-lg bg-primary/10 px-3 py-2">
+                    <div className="flex items-center gap-2 text-sm">
+                      <Tag className="w-4 h-4 text-primary" />
+                      <span className="font-medium">{coupon.code}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-primary font-medium">-{formatPrice(discount)}</span>
+                      <button onClick={removeCoupon} className="text-muted-foreground hover:text-destructive">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <form onSubmit={handleApplyCoupon} className="flex gap-2">
+                    <Input
+                      placeholder="Code promo"
+                      value={couponCode}
+                      onChange={(e) => setCouponCode(e.target.value.toUpperCase())}
+                      className="h-9"
+                    />
+                    <Button type="submit" variant="outline" size="sm" disabled={validating || !couponCode.trim()}>
+                      {validating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Appliquer'}
+                    </Button>
+                  </form>
+                )}
+
+                {discount > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Réduction</span>
+                    <span className="text-primary">-{formatPrice(discount)}</span>
+                  </div>
+                )}
+
                 <Separator />
                 <div className="flex justify-between text-lg font-bold">
                   <span>Total</span>
-                  <span className="text-primary">{formatPrice(total)}</span>
+                  <span className="text-primary">{formatPrice(netTotal)}</span>
                 </div>
               </CardContent>
               <CardFooter>

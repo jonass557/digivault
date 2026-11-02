@@ -4,18 +4,14 @@ import { protect } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
 
-// Initialize payment
+// Initialize payment (deposit)
 router.post('/initialize', protect, paymentController.initializePayment);
 
-// CinetPay routes
-router.post('/cinetpay/webhook', paymentController.cinetpayWebhook);
-router.get('/cinetpay/verify/:transaction_id', paymentController.verifyCinetpayPayment);
+// iKeePay routes
+router.post('/ikeepay/webhook', paymentController.ikeepayWebhook);
+router.get('/ikeepay/verify/:reference', paymentController.verifyIkeepayPayment);
 
-// Card payment routes
-router.post('/card/initialize', protect, paymentController.initializeCardPayment);
-router.post('/card/webhook', paymentController.cardPaymentWebhook);
-
-// Check payment status
+// Check payment status (frontend polling)
 router.get('/status/:order_number', protect, paymentController.checkPaymentStatus);
 
 export default router;

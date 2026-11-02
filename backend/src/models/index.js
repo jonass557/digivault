@@ -19,3 +19,7 @@ export { default as DownloadLog } from './DownloadLog.js';
 export { default as Cart } from './Cart.js';
 export { default as Wishlist } from './Wishlist.js';
 export { default as Setting } from './Setting.js';
+export { default as Coupon } from './Coupon.js';
+export { default as CouponRedemption } from './CouponRedemption.js';
+export { default as Bundle } from './Bundle.js';
+export { default as ProductAffinity } from './ProductAffinity.js';

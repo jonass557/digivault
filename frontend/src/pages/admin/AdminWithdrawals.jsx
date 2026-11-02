@@ -44,7 +44,12 @@ export default function AdminWithdrawals() {
                   </div>
                   <div className="text-right">
                     <p className="font-bold text-xl text-primary">{formatPrice(w.amount)}</p>
-                    <p className="text-sm text-muted-foreground">{w.mobile_network?.toUpperCase()}</p>
+                    {w.fee_amount > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Frais {formatPrice(w.fee_amount)} • Net {formatPrice(w.net_amount)}
+                      </p>
+                    )}
+                    <p className="text-sm text-muted-foreground">{w.mobile_network?.toUpperCase() || w.payment_method}</p>
                   </div>
                   <div className="flex gap-2">
                     <Button size="sm" onClick={() => handleProcess(w.id, 'completed')}>

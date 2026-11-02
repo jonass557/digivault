@@ -74,6 +74,8 @@ export const productsAPI = {
   getFeatured: (limit) => api.get('/products/featured', { params: { limit } }),
   getBySlug: (slug) => api.get(`/products/${slug}`),
   getByCategory: (slug, params) => api.get(`/products/category/${slug}`, { params }),
+  getRelated: (slug, params) => api.get(`/products/${slug}/related`, { params }),
+  getFrequentlyBought: (slug, params) => api.get(`/products/${slug}/frequently-bought`, { params }),
   search: (params) => api.get('/products/search', { params }),
   create: (data) => api.post('/products', data),
   update: (id, data) => api.put(`/products/${id}`, data),
@@ -220,6 +222,31 @@ export const adminAPI = {
   createBanner: (data) => api.post('/banners', data),
   updateBanner: (id, data) => api.put(`/banners/${id}`, data),
   deleteBanner: (id) => api.delete(`/banners/${id}`),
+};
+
+// Coupons API
+export const couponsAPI = {
+  validate: (code, items) => api.post('/coupons/validate', { code, items }),
+  // Vendor
+  getMine: () => api.get('/coupons/my-coupons'),
+  create: (data) => api.post('/coupons', data),
+  update: (id, data) => api.put(`/coupons/${id}`, data),
+  delete: (id) => api.delete(`/coupons/${id}`),
+  // Admin
+  getAllAdmin: (params) => api.get('/coupons/admin', { params }),
+  createAdmin: (data) => api.post('/coupons/admin', data),
+};
+
+// Bundles API
+export const bundlesAPI = {
+  getPublished: (params) => api.get('/bundles', { params }),
+  getBySlug: (slug) => api.get(`/bundles/${slug}`),
+  getForProduct: (productId) => api.get(`/bundles/for-product/${productId}`),
+  // Vendor
+  getMine: () => api.get('/bundles/mine'),
+  create: (data) => api.post('/bundles', data),
+  update: (id, data) => api.put(`/bundles/${id}`, data),
+  delete: (id) => api.delete(`/bundles/${id}`),
 };
 
 export default api;

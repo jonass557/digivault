@@ -1,9 +1,9 @@
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Helmet } from 'react-helmet-async';
-import { 
-  ShoppingCart, Heart, Star, Download, Eye, Clock, FileText, 
-  ChevronRight, User, Check, AlertCircle
+import {
+  ShoppingCart, Heart, Star, Download, Eye, Clock, FileText,
+  ChevronRight, User, Check, AlertCircle, Layers, Plus
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
@@ -11,7 +11,8 @@ import { Badge } from '../components/ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../components/ui/avatar';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Separator } from '../components/ui/separator';
-import { productsAPI } from '../lib/api';
+import ProductCard from '../components/ProductCard';
+import { productsAPI, bundlesAPI } from '../lib/api';
 import { formatPrice, formatDate, getInitials, formatFileSize } from '../lib/utils';
 import { useCartStore } from '../stores/cartStore';
 import { useAuthStore } from '../stores/authStore';
@@ -27,6 +28,24 @@ export default function ProductPage() {
     queryFn: () => productsAPI.getBySlug(slug).then(res => res.data),
   });
 
+  const { data: related = [] } = useQuery({
+    queryKey: ['product-related', slug],
+    queryFn: () => productsAPI.getRelated(slug).then(res => res.data),
+    enabled: !!product,
+  });
+
+  const { data: frequentlyBought = [] } = useQuery({
+    queryKey: ['product-frequently-bought', slug],
+    queryFn: () => productsAPI.getFrequentlyBought(slug).then(res => res.data),
+    enabled: !!product,
+  });
+
+  const { data: productBundles = [] } = useQuery({
+    queryKey: ['product-bundles', product?.id],
+    queryFn: () => bundlesAPI.getForProduct(product.id).then(res => res.data),
+    enabled: !!product?.id,
+  });
+
   const inCart = product ? hasItem(product.id) : false;
 
   const handleAddToCart = () => {
@@ -36,6 +55,15 @@ export default function ProductPage() {
     }
     addItem(product);
     toast.success('Ajouté au panier');
+  };
+
+  const handleAddAllBoughtTogether = () => {
+    let added = 0;
+    if (!inCart) { addItem(product); added++; }
+    frequentlyBought.forEach((p) => {
+      if (!hasItem(p.id)) { addItem(p); added++; }
+    });
+    toast.success(added > 0 ? `${added} produit(s) ajouté(s) au panier` : 'Déjà dans le panier');
   };
 
   if (isLoading) {
@@ -70,6 +98,11 @@ export default function ProductPage() {
   }
 
   const hasDiscount = product.sale_price && product.sale_price < product.price;
+  const now = Date.now();
+  const flashActive = hasDiscount &&
+    (product.sale_starts_at || product.sale_ends_at) &&
+    (!product.sale_starts_at || now >= new Date(product.sale_starts_at).getTime()) &&
+    (!product.sale_ends_at || now <= new Date(product.sale_ends_at).getTime());
 
   return (
     <>
@@ -139,6 +172,12 @@ export default function ProductPage() {
 
             {/* Price */}
             <div className="mb-6">
+              {flashActive && (
+                <Badge variant="destructive" className="mb-2 gap-1">
+                  <Clock className="w-3.5 h-3.5" />
+                  Vente flash{product.sale_ends_at ? ` — jusqu'au ${formatDate(product.sale_ends_at)}` : ''}
+                </Badge>
+              )}
               {hasDiscount ? (
                 <div className="flex items-center gap-3">
                   <span className="text-4xl font-bold text-primary">{formatPrice(product.sale_price)}</span>
@@ -269,6 +308,81 @@ export default function ProductPage() {
             </Card>
           </TabsContent>
         </Tabs>
+
+        {/* Fréquemment achetés ensemble */}
+        {frequentlyBought.length > 0 && (
+          <div className="mb-12">
+            <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
+              <Plus className="w-5 h-5 text-primary" /> Fréquemment achetés ensemble
+            </h2>
+            <Card>
+              <CardContent className="p-6">
+                <div className="flex flex-wrap items-center gap-4 mb-4">
+                  {[product, ...frequentlyBought].map((p, i) => (
+                    <div key={p.id} className="flex items-center gap-4">
+                      {i > 0 && <Plus className="w-4 h-4 text-muted-foreground" />}
+                      <Link to={`/products/${p.slug}`} className="flex flex-col items-center w-28 text-center">
+                        <div className="w-24 h-24 rounded-lg bg-muted overflow-hidden mb-1">
+                          <img src={p.thumbnail || '/placeholder.jpg'} alt={p.name} className="w-full h-full object-cover" />
+                        </div>
+                        <span className="text-xs line-clamp-2">{p.name}</span>
+                        <span className="text-xs font-bold text-primary">{formatPrice(p.sale_price || p.price)}</span>
+                      </Link>
+                    </div>
+                  ))}
+                </div>
+                <Button onClick={handleAddAllBoughtTogether}>
+                  <ShoppingCart className="w-4 h-4 mr-2" /> Tout ajouter au panier
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {/* Packs contenant ce produit */}
+        {productBundles.length > 0 && (
+          <div className="mb-12">
+            <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
+              <Layers className="w-5 h-5 text-primary" /> Disponible en pack
+            </h2>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {productBundles.map((b) => (
+                <Link key={b.id} to={`/store/${b.store_slug}`}>
+                  <Card className="hover:shadow-lg transition-shadow h-full">
+                    <CardContent className="p-4">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Layers className="w-4 h-4 text-primary" />
+                        <h3 className="font-semibold line-clamp-1">{b.name}</h3>
+                      </div>
+                      <p className="text-sm text-muted-foreground mb-2">{b.product_count} produits</p>
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-primary">{formatPrice(b.bundle_price)}</span>
+                        {b.savings > 0 && (
+                          <>
+                            <span className="text-sm text-muted-foreground line-through">{formatPrice(b.compare_at_price)}</span>
+                            <Badge variant="destructive">-{b.savings_percent}%</Badge>
+                          </>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </Link>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Produits similaires */}
+        {related.length > 0 && (
+          <div className="mb-12">
+            <h2 className="text-2xl font-bold mb-4">Vous aimerez aussi</h2>
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {related.slice(0, 4).map((p) => (
+                <ProductCard key={p.id} product={p} />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </>
   );

@@ -275,6 +275,7 @@ async function seed() {
     await Setting.insertMany([
       { setting_key: 'site_name', setting_value: 'DigitalMarket', setting_type: 'string' },
       { setting_key: 'commission_rate', setting_value: '10', setting_type: 'number' },
+      { setting_key: 'withdrawal_fee_rate', setting_value: '10', setting_type: 'number' },
       { setting_key: 'min_withdrawal', setting_value: '5000', setting_type: 'number' },
       { setting_key: 'currency', setting_value: 'XOF', setting_type: 'string' },
       { setting_key: 'max_download_attempts', setting_value: '5', setting_type: 'number' }

@@ -30,6 +30,8 @@ import withdrawalRoutes from './routes/withdrawal.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 import uploadRoutes from './routes/upload.routes.js';
 import notificationRoutes from './routes/notification.routes.js';
+import couponRoutes from './routes/coupon.routes.js';
+import bundleRoutes from './routes/bundle.routes.js';
 
 // Import error handler
 import { errorHandler, notFound } from './middleware/error.middleware.js';
@@ -96,6 +98,8 @@ app.use('/api/withdrawals', withdrawalRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/coupons', couponRoutes);
+app.use('/api/bundles', bundleRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

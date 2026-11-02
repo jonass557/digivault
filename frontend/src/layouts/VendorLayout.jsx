@@ -1,7 +1,7 @@
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { 
-  LayoutDashboard, Package, ShoppingCart, Wallet, Settings, 
-  ChevronLeft, Menu, X, ShoppingBag, Bell, Moon, Sun
+import {
+  LayoutDashboard, Package, ShoppingCart, Wallet, Settings,
+  ChevronLeft, Menu, X, ShoppingBag, Bell, Moon, Sun, Ticket, Layers
 } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '../components/ui/button';
@@ -14,6 +14,8 @@ const menuItems = [
   { path: '/vendor/dashboard', label: 'Tableau de bord', icon: LayoutDashboard },
   { path: '/vendor/products', label: 'Mes produits', icon: Package },
   { path: '/vendor/orders', label: 'Mes ventes', icon: ShoppingCart },
+  { path: '/vendor/coupons', label: 'Coupons', icon: Ticket },
+  { path: '/vendor/bundles', label: 'Packs', icon: Layers },
   { path: '/vendor/withdrawals', label: 'Retraits', icon: Wallet },
   { path: '/vendor/settings', label: 'Paramètres', icon: Settings },
 ];

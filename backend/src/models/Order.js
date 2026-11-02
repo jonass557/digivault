@@ -23,9 +23,23 @@ const orderSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  // Réduction appliquée (coupon / bundle). Défauts neutres pour rétro-compat.
+  coupon_code: {
+    type: String,
+    default: null
+  },
+  discount_amount: {
+    type: Number,
+    default: 0
+  },
+  bundle_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Bundle',
+    default: null
+  },
   payment_method: {
     type: String,
-    enum: ['cinetpay', 'card', 'mobile_money'],
+    enum: ['card', 'mobile_money'],
     required: true
   },
   payment_status: {

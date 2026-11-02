@@ -1,8 +1,8 @@
 import { Outlet, Link, useLocation } from 'react-router-dom';
-import { 
-  LayoutDashboard, Package, Users, Store, ShoppingCart, Wallet, 
-  FolderTree, Image, FileText, Settings, ChevronLeft, Menu, X, 
-  ShoppingBag, Bell, Moon, Sun, UserCheck
+import {
+  LayoutDashboard, Package, Users, Store, ShoppingCart, Wallet,
+  FolderTree, Image, FileText, Settings, ChevronLeft, Menu, X,
+  ShoppingBag, Bell, Moon, Sun, UserCheck, Ticket
 } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '../components/ui/button';
@@ -21,6 +21,7 @@ const menuItems = [
   { path: '/admin/users', label: 'Utilisateurs', icon: Users },
   { path: '/admin/withdrawals', label: 'Retraits', icon: Wallet, badge: true },
   { path: '/admin/categories', label: 'Catégories', icon: FolderTree },
+  { path: '/admin/coupons', label: 'Coupons', icon: Ticket },
   { path: '/admin/banners', label: 'Bannières', icon: Image },
   { path: '/admin/blog', label: 'Blog', icon: FileText },
   { path: '/admin/settings', label: 'Paramètres', icon: Settings },

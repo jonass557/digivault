@@ -17,6 +17,8 @@ router.get('/', optionalAuth, productController.getProducts);
 router.get('/featured', productController.getFeaturedProducts);
 router.get('/search', productController.searchProducts);
 router.get('/category/:slug', productController.getProductsByCategory);
+router.get('/:slug/related', productController.getRelatedProducts);
+router.get('/:slug/frequently-bought', productController.getFrequentlyBought);
 router.get('/:slug', optionalAuth, productController.getProductBySlug);
 
 // Protected routes (vendor)

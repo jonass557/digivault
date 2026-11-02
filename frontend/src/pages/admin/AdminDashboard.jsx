@@ -18,7 +18,7 @@ export default function AdminDashboard() {
     { title: 'Produits', value: data?.stats?.products || 0, icon: Package, color: 'text-purple-500' },
     { title: 'Commandes', value: data?.stats?.orders || 0, icon: ShoppingCart, color: 'text-orange-500' },
     { title: 'Revenus totaux', value: formatPrice(data?.stats?.revenue || 0), icon: DollarSign, color: 'text-green-600' },
-    { title: 'Mes Commissions', value: formatPrice(data?.stats?.commission || 0), icon: TrendingUp, color: 'text-primary' },
+    { title: 'Frais de retrait perçus', value: formatPrice(data?.stats?.withdrawalFees || 0), icon: TrendingUp, color: 'text-primary' },
   ];
 
   return (

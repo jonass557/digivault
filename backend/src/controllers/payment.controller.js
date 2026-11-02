@@ -1,80 +1,159 @@
-import axios from 'axios';
-import crypto from 'crypto';
-import { Product, Vendor, Order, OrderItem, Commission, User, Notification } from '../models/index.js';
+import ikeepay from '../config/ikeepay.js';
+import { Product, Vendor, Order, OrderItem, Commission, User, Coupon, CouponRedemption, Bundle, ProductAffinity } from '../models/index.js';
 import { generateOrderNumber, generateDownloadToken } from '../utils/token.utils.js';
 import { sendOrderConfirmationEmail, sendNewSaleEmail } from '../utils/email.utils.js';
+import { effectivePrice, distributeProrata } from '../utils/pricing.utils.js';
+import { evaluateCoupon } from './coupon.controller.js';
+import { createNotification } from '../utils/notification.utils.js';
 
-const COMMISSION_RATE = parseFloat(process.env.COMMISSION_RATE) || 0.10;
-
-// Initialize payment
+// Initialize payment (deposit) via iKeePay
 export const initializePayment = async (req, res) => {
   try {
-    const { items, payment_method } = req.body;
+    const { items, payment_method, phone, operator, country, coupon_code, bundle_id } = req.body;
 
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: 'Aucun produit sélectionné' });
+    const now = new Date();
+
+    // ── Résolution des lignes : achat d'un pack (bundle_id) OU de produits ────
+    let bundle = null;
+    let productIds;
+
+    if (bundle_id) {
+      bundle = await Bundle.findOne({ _id: bundle_id, status: 'published' }).lean();
+      if (!bundle) {
+        return res.status(400).json({ error: 'Pack non disponible' });
+      }
+      productIds = bundle.product_ids.map(id => id.toString());
+    } else {
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({ error: 'Aucun produit sélectionné' });
+      }
+      productIds = items.map(i => i.product_id);
     }
 
     // Get product details
-    const productIds = items.map(i => i.product_id);
     const products = await Product.find({ _id: { $in: productIds }, status: 'published' })
       .populate('vendor_id')
       .lean();
 
-    if (products.length !== items.length) {
+    if (products.length !== productIds.length) {
       return res.status(400).json({ error: 'Certains produits ne sont pas disponibles' });
     }
 
     // Check if user already owns any of these products
     const userOrders = await Order.find({ user_id: req.user.id, payment_status: 'completed' });
     const orderIds = userOrders.map(o => o._id);
-    const existingPurchases = await OrderItem.find({ 
-      order_id: { $in: orderIds }, 
-      product_id: { $in: productIds } 
+    const existingPurchases = await OrderItem.find({
+      order_id: { $in: orderIds },
+      product_id: { $in: productIds }
     });
 
     if (existingPurchases.length > 0) {
       const ownedIds = existingPurchases.map(p => p.product_id);
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Vous possédez déjà certains de ces produits',
         owned_products: ownedIds
       });
     }
 
-    // Calculate totals
-    let totalAmount = 0;
+    // ── Chiffrage (prix effectif = tient compte des ventes flash) ─────────────
+    // La commission est prélevée au RETRAIT, pas à la vente : le vendeur
+    // accumule 100 % du montant net de sa ligne (commission_amount = 0).
     const orderItems = products.map(product => {
-      const price = product.sale_price || product.price;
-      const commissionAmount = Math.round(price * COMMISSION_RATE);
-      const vendorAmount = price - commissionAmount;
-      totalAmount += price;
-
+      const price = effectivePrice(product, now);
       return {
         product_id: product._id,
         vendor_id: product.vendor_id._id,
+        category_id: product.category_id,
         product_name: product.name,
         price,
-        commission_amount: commissionAmount,
-        vendor_amount: vendorAmount
+        discount_amount: 0,
+        discount_source: null,
+        vendor_amount: price
       };
     });
 
-    const commissionTotal = Math.round(totalAmount * COMMISSION_RATE);
-    const vendorTotal = totalAmount - commissionTotal;
+    // ── Cas pack : le prix du pack remplace la somme, réparti au prorata ──────
+    if (bundle) {
+      const shares = distributeProrata(bundle.bundle_price, orderItems.map(i => i.price));
+      orderItems.forEach((item, idx) => {
+        const share = shares[idx];
+        item.discount_amount = item.price - share; // remise implicite du pack
+        item.discount_source = 'bundle';
+        item.price = share;         // prix de la ligne = part du pack
+        item.vendor_amount = share; // le vendeur absorbe la remise pack
+      });
+    }
+
+    let totalAmount = orderItems.reduce((sum, i) => sum + i.price, 0);
+
+    // ── Coupon : validé ET chiffré côté serveur (le client ne décide rien) ────
+    let appliedCoupon = null;
+    let couponDiscount = 0;
+    if (coupon_code) {
+      const coupon = await Coupon.findOne({ code: coupon_code.toUpperCase().trim() });
+      const evaluation = coupon
+        ? await evaluateCoupon({
+            coupon,
+            pricedItems: orderItems.map(i => ({
+              product_id: i.product_id,
+              vendor_id: i.vendor_id,
+              category_id: i.category_id,
+              price: i.price
+            })),
+            userId: req.user.id,
+            now
+          })
+        : { valid: false, reason: 'Coupon introuvable' };
+
+      if (!evaluation.valid) {
+        return res.status(400).json({ error: evaluation.reason || 'Coupon invalide' });
+      }
+
+      appliedCoupon = coupon;
+      couponDiscount = evaluation.discount_amount;
+
+      // Répartit la remise sur les seuls items éligibles, au prorata du prix.
+      const applicableSet = new Set(evaluation.applies_to);
+      const applicableIdx = orderItems
+        .map((i, idx) => (applicableSet.has(i.product_id.toString()) ? idx : -1))
+        .filter(idx => idx >= 0);
+      const shares = distributeProrata(couponDiscount, applicableIdx.map(idx => orderItems[idx].price));
+
+      applicableIdx.forEach((idx, k) => {
+        const d = shares[k];
+        const item = orderItems[idx];
+        item.discount_amount += d;
+        if (evaluation.source === 'vendor') {
+          // Coupon vendeur : remise retenue sur la part vendeur.
+          item.vendor_amount = Math.max(0, item.vendor_amount - d);
+          if (!item.discount_source) item.discount_source = 'vendor';
+        } else if (!item.discount_source) {
+          // Coupon admin : la plateforme absorbe ; part vendeur inchangée.
+          item.discount_source = 'platform';
+        }
+      });
+
+      totalAmount = Math.max(0, totalAmount - couponDiscount);
+    }
 
     // Create order
     const orderNumber = generateOrderNumber();
+    const resolvedCountry = (country || 'CI').toUpperCase();
+    const currency = ikeepay.currencyForCountry(resolvedCountry);
 
     const order = await Order.create({
       order_number: orderNumber,
       user_id: req.user.id,
       total_amount: totalAmount,
-      commission_amount: commissionTotal,
-      vendor_amount: vendorTotal,
-      payment_method,
+      commission_amount: 0,
+      vendor_amount: orderItems.reduce((sum, i) => sum + i.vendor_amount, 0),
+      coupon_code: appliedCoupon ? appliedCoupon.code : null,
+      discount_amount: couponDiscount,
+      bundle_id: bundle ? bundle._id : null,
+      payment_method: payment_method === 'card' ? 'card' : 'mobile_money',
       customer_email: req.user.email,
-      customer_phone: req.body.phone || null,
-      currency: 'XOF'
+      customer_phone: phone || null,
+      currency
     });
 
     // Create order items
@@ -85,138 +164,124 @@ export const initializePayment = async (req, res) => {
         vendor_id: item.vendor_id,
         product_name: item.product_name,
         price: item.price,
-        commission_amount: item.commission_amount,
+        commission_amount: 0,
         vendor_amount: item.vendor_amount,
+        discount_amount: item.discount_amount,
+        discount_source: item.discount_source,
         max_downloads: parseInt(process.env.MAX_DOWNLOAD_ATTEMPTS) || 5
       });
     }
 
-    // Initialize CinetPay payment
-    const cinetpayData = {
-      apikey: process.env.CINETPAY_API_KEY,
-      site_id: process.env.CINETPAY_SITE_ID,
-      transaction_id: orderNumber,
-      amount: totalAmount,
-      currency: 'XOF',
-      description: `Commande ${orderNumber} - DigitalMarket`,
-      notify_url: process.env.CINETPAY_NOTIFY_URL,
-      return_url: `${process.env.CINETPAY_RETURN_URL}?order=${orderNumber}`,
-      cancel_url: process.env.CINETPAY_CANCEL_URL,
-      channels: payment_method === 'card' ? 'CREDIT_CARD' : 'MOBILE_MONEY',
-      customer_name: `${req.user.first_name} ${req.user.last_name}`,
-      customer_email: req.user.email,
-      customer_phone_number: req.body.phone || '',
-      customer_address: '',
-      customer_city: '',
-      customer_country: 'CI',
-      customer_state: '',
-      customer_zip_code: ''
-    };
-
-    const cinetpayResponse = await axios.post(
-      'https://api-checkout.cinetpay.com/v2/payment',
-      cinetpayData,
-      { headers: { 'Content-Type': 'application/json' } }
-    );
-
-    if (cinetpayResponse.data.code !== '201') {
-      await Order.findByIdAndUpdate(order._id, { status: 'cancelled' });
-      return res.status(400).json({ 
-        error: 'Erreur lors de l\'initialisation du paiement',
-        details: cinetpayResponse.data.message
+    // Initialize iKeePay collection
+    let collect;
+    try {
+      collect = await ikeepay.createCollect({
+        amount: totalAmount,
+        currency,
+        operator: payment_method === 'card' ? undefined : operator,
+        country: resolvedCountry,
+        phone_no: phone || undefined,
+        external_reference: orderNumber,
+        customer_email: req.user.email,
+        description: `Commande ${orderNumber} - DigitalMarket`
+      });
+    } catch (gatewayError) {
+      await Order.findByIdAndUpdate(order._id, { payment_status: 'failed', status: 'cancelled' });
+      return res.status(400).json({
+        error: "Erreur lors de l'initialisation du paiement",
+        details: gatewayError.message
       });
     }
 
     // Update order with payment reference
     await Order.findByIdAndUpdate(order._id, {
-      payment_reference: cinetpayResponse.data.data.payment_token,
+      payment_reference: collect.reference,
       status: 'processing'
     });
 
     res.json({
       success: true,
       order_number: orderNumber,
-      payment_url: cinetpayResponse.data.data.payment_url,
-      payment_token: cinetpayResponse.data.data.payment_token
+      payment_url: collect.payment_link,
+      payment_reference: collect.reference
     });
   } catch (error) {
     console.error('Initialize payment error:', error);
-    res.status(500).json({ error: 'Erreur lors de l\'initialisation du paiement' });
+    res.status(500).json({ error: "Erreur lors de l'initialisation du paiement" });
   }
 };
 
-// CinetPay webhook
-export const cinetpayWebhook = async (req, res) => {
+// iKeePay webhook (notification)
+export const ikeepayWebhook = async (req, res) => {
   try {
-    const { cpm_trans_id, cpm_site_id } = req.body;
+    const signature =
+      req.headers['x-ikeepay-signature'] ||
+      req.headers['x-signature'] ||
+      req.headers['ikeepay-signature'];
 
-    if (!cpm_trans_id || cpm_site_id !== process.env.CINETPAY_SITE_ID) {
-      return res.status(400).json({ error: 'Invalid webhook data' });
+    // Vérifie la signature si un secret est configuré.
+    const sigValid = ikeepay.verifyWebhookSignature(req.body, signature);
+    if (sigValid === false) {
+      return res.status(401).json({ error: 'Signature invalide' });
     }
 
-    // Verify payment with CinetPay
-    const verifyResponse = await axios.post(
-      'https://api-checkout.cinetpay.com/v2/payment/check',
-      {
-        apikey: process.env.CINETPAY_API_KEY,
-        site_id: process.env.CINETPAY_SITE_ID,
-        transaction_id: cpm_trans_id
-      }
-    );
+    const reference =
+      req.body.external_reference ||
+      req.body.reference ||
+      req.body.transaction_id ||
+      req.body.order_number;
 
-    const paymentData = verifyResponse.data.data;
+    if (!reference) {
+      return res.status(400).json({ error: 'Référence manquante' });
+    }
 
-    // Get order
-    const order = await Order.findOne({ order_number: cpm_trans_id });
-
+    const order = await Order.findOne({ order_number: reference });
     if (!order) {
-      return res.status(404).json({ error: 'Order not found' });
+      return res.status(404).json({ error: 'Commande non trouvée' });
     }
 
-    if (paymentData.status === 'ACCEPTED') {
-      await processSuccessfulPayment(order, paymentData.payment_method);
-    } else if (paymentData.status === 'REFUSED') {
+    // Re-vérification systématique du statut côté iKeePay (source de vérité).
+    const verification = await ikeepay.verifyTransaction(order.payment_reference || reference);
+
+    if (verification.status === 'SUCCESS' && order.payment_status !== 'completed') {
+      await processSuccessfulPayment(order, order.payment_method);
+    } else if (verification.status === 'FAILED') {
       await Order.findByIdAndUpdate(order._id, { payment_status: 'failed', status: 'cancelled' });
     }
 
     res.json({ status: 'OK' });
   } catch (error) {
-    console.error('CinetPay webhook error:', error);
+    console.error('iKeePay webhook error:', error);
     res.status(500).json({ error: 'Webhook processing failed' });
   }
 };
 
-// Verify CinetPay payment
-export const verifyCinetpayPayment = async (req, res) => {
+// Verify iKeePay payment
+export const verifyIkeepayPayment = async (req, res) => {
   try {
-    const { transaction_id } = req.params;
+    const { reference } = req.params;
 
-    const verifyResponse = await axios.post(
-      'https://api-checkout.cinetpay.com/v2/payment/check',
-      {
-        apikey: process.env.CINETPAY_API_KEY,
-        site_id: process.env.CINETPAY_SITE_ID,
-        transaction_id
-      }
-    );
-
-    const paymentData = verifyResponse.data.data;
-
-    // Get order
-    const order = await Order.findOne({ order_number: transaction_id });
+    const order = await Order.findOne({
+      $or: [{ order_number: reference }, { payment_reference: reference }]
+    });
 
     if (!order) {
       return res.status(404).json({ error: 'Commande non trouvée' });
     }
 
-    if (paymentData.status === 'ACCEPTED' && order.payment_status !== 'completed') {
-      await processSuccessfulPayment(order, paymentData.payment_method);
+    const verification = await ikeepay.verifyTransaction(order.payment_reference || reference);
+
+    if (verification.status === 'SUCCESS' && order.payment_status !== 'completed') {
+      await processSuccessfulPayment(order, order.payment_method);
+    } else if (verification.status === 'FAILED' && order.payment_status !== 'completed') {
+      await Order.findByIdAndUpdate(order._id, { payment_status: 'failed', status: 'cancelled' });
     }
 
+    const updated = await Order.findById(order._id).lean();
     res.json({
-      status: paymentData.status,
+      status: verification.status,
       order_number: order.order_number,
-      payment_status: order.payment_status
+      payment_status: updated.payment_status
     });
   } catch (error) {
     console.error('Verify payment error:', error);
@@ -224,18 +289,7 @@ export const verifyCinetpayPayment = async (req, res) => {
   }
 };
 
-// Initialize card payment
-export const initializeCardPayment = async (req, res) => {
-  req.body.payment_method = 'card';
-  return initializePayment(req, res);
-};
-
-// Card payment webhook
-export const cardPaymentWebhook = async (req, res) => {
-  return cinetpayWebhook(req, res);
-};
-
-// Check payment status
+// Check payment status (for the frontend success page polling)
 export const checkPaymentStatus = async (req, res) => {
   try {
     const { order_number } = req.params;
@@ -246,24 +300,19 @@ export const checkPaymentStatus = async (req, res) => {
       return res.status(404).json({ error: 'Commande non trouvée' });
     }
 
-    // If pending, check with CinetPay
+    // If not yet completed, re-check with iKeePay.
     if (order.payment_status === 'pending' || order.payment_status === 'processing') {
       try {
-        const verifyResponse = await axios.post(
-          'https://api-checkout.cinetpay.com/v2/payment/check',
-          {
-            apikey: process.env.CINETPAY_API_KEY,
-            site_id: process.env.CINETPAY_SITE_ID,
-            transaction_id: order_number
-          }
-        );
-
-        if (verifyResponse.data.data.status === 'ACCEPTED' && order.payment_status !== 'completed') {
-          await processSuccessfulPayment(order, verifyResponse.data.data.payment_method);
+        const verification = await ikeepay.verifyTransaction(order.payment_reference || order_number);
+        if (verification.status === 'SUCCESS' && order.payment_status !== 'completed') {
+          await processSuccessfulPayment(order, order.payment_method);
           order.payment_status = 'completed';
+        } else if (verification.status === 'FAILED') {
+          await Order.findByIdAndUpdate(order._id, { payment_status: 'failed', status: 'cancelled' });
+          order.payment_status = 'failed';
         }
       } catch (e) {
-        // Ignore verification errors
+        // Ignore verification errors during polling.
       }
     }
 
@@ -305,14 +354,16 @@ async function processSuccessfulPayment(order, paymentMethod) {
         download_expires: downloadExpires
       });
 
-      // Create commission record
+      // Create commission record.
+      // La commission plateforme est retenue au retrait : ici le vendeur
+      // crédite 100 % du prix (commission_amount = 0).
       await Commission.create({
         order_id: order._id,
         order_item_id: item._id,
         vendor_id: item.vendor_id,
         total_amount: item.price,
-        commission_rate: COMMISSION_RATE * 100,
-        commission_amount: item.commission_amount,
+        commission_rate: 0,
+        commission_amount: 0,
         vendor_amount: item.vendor_amount,
         status: 'available',
         available_at: new Date()
@@ -332,13 +383,50 @@ async function processSuccessfulPayment(order, paymentMethod) {
     }
 
     // Create notification for user
-    await Notification.create({
+    await createNotification({
       user_id: order.user_id,
       type: 'order',
       title: 'Commande confirmée',
       message: `Votre commande ${order.order_number} a été confirmée. Téléchargez vos fichiers maintenant !`,
       link: '/account/downloads'
     });
+
+    // ── Coupon : consommer (enregistrer la redemption + incrémenter le compteur) ─
+    if (order.coupon_code && order.discount_amount > 0) {
+      const coupon = await Coupon.findOne({ code: order.coupon_code });
+      if (coupon) {
+        const already = await CouponRedemption.findOne({ coupon_id: coupon._id, order_id: order._id });
+        if (!already) {
+          await CouponRedemption.create({
+            coupon_id: coupon._id,
+            user_id: order.user_id,
+            order_id: order._id,
+            code: coupon.code,
+            amount_discounted: order.discount_amount
+          });
+          await Coupon.findByIdAndUpdate(coupon._id, { $inc: { used_count: 1 } });
+        }
+      }
+    }
+
+    // ── Bundle : incrémenter le compteur de ventes du pack ────────────────────
+    if (order.bundle_id) {
+      await Bundle.findByIdAndUpdate(order.bundle_id, { $inc: { sales_count: 1 } });
+    }
+
+    // ── Affinité produits : +1 pour chaque paire co-achetée ("achetés ensemble")
+    const productIdList = items.map(i => i.product_id.toString());
+    for (let a = 0; a < productIdList.length; a++) {
+      for (let b = a + 1; b < productIdList.length; b++) {
+        // Paire ordonnée stable (product_a < product_b) pour éviter les doublons.
+        const [pa, pb] = [productIdList[a], productIdList[b]].sort();
+        await ProductAffinity.updateOne(
+          { product_a: pa, product_b: pb },
+          { $inc: { count: 1 } },
+          { upsert: true }
+        );
+      }
+    }
 
     // Send confirmation email
     const user = await User.findById(order.user_id);

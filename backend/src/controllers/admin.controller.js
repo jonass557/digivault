@@ -38,6 +38,13 @@ export const getDashboardStats = async (req, res) => {
       { $group: { _id: null, count: { $sum: 1 }, total: { $sum: '$amount' } } }
     ]);
 
+    // Platform revenue from withdrawal fees (commission désormais prélevée au retrait)
+    const withdrawalFeesResult = await Withdrawal.aggregate([
+      { $match: { status: 'completed' } },
+      { $group: { _id: null, total: { $sum: '$fee_amount' } } }
+    ]);
+    const withdrawalFees = withdrawalFeesResult[0]?.total || 0;
+
     // Recent orders
     const recentOrders = await Order.find()
       .populate('user_id', 'first_name last_name email')
@@ -94,6 +101,7 @@ export const getDashboardStats = async (req, res) => {
         orders: ordersCount,
         revenue,
         commission,
+        withdrawalFees,
         pendingWithdrawals: {
           count: pendingWithdrawalsResult[0]?.count || 0,
           total: pendingWithdrawalsResult[0]?.total || 0

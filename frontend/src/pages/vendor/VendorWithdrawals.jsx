@@ -32,6 +32,11 @@ export default function VendorWithdrawals() {
     queryFn: () => withdrawalsAPI.getMyWithdrawals({ limit: 20 }).then(res => res.data),
   });
 
+  const feeRate = balance?.withdrawal_fee_rate ?? 10;
+  const requested = parseFloat(amount) || 0;
+  const feeAmount = Math.round(requested * (feeRate / 100));
+  const netAmount = requested - feeAmount;
+
   const handleRequest = async () => {
     setIsLoading(true);
     try {
@@ -74,6 +79,18 @@ export default function VendorWithdrawals() {
                   <Label>Montant (FCFA)</Label>
                   <Input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} />
                 </div>
+                {requested > 0 && (
+                  <div className="p-3 rounded-lg border text-sm space-y-1">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Frais de retrait ({feeRate}%)</span>
+                      <span>-{formatPrice(feeAmount)}</span>
+                    </div>
+                    <div className="flex justify-between font-semibold">
+                      <span>Montant net reçu</span>
+                      <span className="text-primary">{formatPrice(netAmount)}</span>
+                    </div>
+                  </div>
+                )}
                 <div>
                   <Label>Réseau</Label>
                   <Select value={network} onValueChange={setNetwork}>
